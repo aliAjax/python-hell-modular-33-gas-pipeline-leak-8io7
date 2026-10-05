@@ -1,5 +1,6 @@
-<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>燃气管线泄漏响应</title><body><h1>燃气管线泄漏检测与隔离协调</h1><p>使用 JSON API 创建泄漏事件、登记巡检或传感记录，并完成核验、隔离、抢修、试压与恢复。</p><pre>GET /health
-GET /api/state
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>燃气管线泄漏响应</title><body><h1>燃气管线泄漏检测与隔离协调</h1><p>使用 JSON API 创建泄漏事件、登记巡检或传感记录，并完成核验、隔离、抢修、试压与恢复。</p><pre>GET  /health
+GET  /api/state
 POST /api/items
 POST /api/items/{id}/sources
-POST /api/items/{id}/actions</pre></body></html>
+POST /api/items/{id}/backfill          断网批量补交：按外部编号幂等合并，同时刻传感/人工双版本并存，读数变化即重算等级
+POST /api/items/{id}/actions</pre><p>补交后等级高于隔离时：阀门顺序作废、状态退回核验（reverify_required），审计事件 <code>level_reassessed</code>/<code>isolation_voided</code> 标明抬级的补交记录；管段详情中的 <code>source_coverage</code> 标明缺失的另一版与尚未交回的终端记录。</p></body></html>

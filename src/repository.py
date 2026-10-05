@@ -160,42 +160,10 @@ class Repository:
         finally:
             conn.close()
 
-    def add_source(self, item_id, source_type, external_id, payload, observed_at, actor, role):
-        conn = self.connect()
-        try:
-            conn.execute("BEGIN IMMEDIATE")
-            item = conn.execute("SELECT id FROM items WHERE id=?", (item_id,)).fetchone()
-            if item is None:
-                raise NotFoundError("item_not_found", "业务实体不存在")
-            try:
-                conn.execute(
-                    "INSERT INTO sources(item_id,source_type,external_id,payload,observed_at,created_at) VALUES(?,?,?,?,?,?)",
-                    (item_id, source_type, external_id, canonical_json(payload), observed_at, now_iso()),
-                )
-            except sqlite3.IntegrityError:
-                raise ConflictError("duplicate_source", "同一来源记录已经提交")
-            source_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
-            self.append_audit(
-                conn,
-                item_id,
-                "source_recorded",
-                actor,
-                role,
-                {"source_id": source_id, "source_type": source_type, "external_id": external_id},
-            )
-            conn.execute("COMMIT")
-            return {"id": source_id, "item_id": item_id, "source_type": source_type, "external_id": external_id, "payload": payload, "observed_at": observed_at}
-        except Exception:
-            try:
-                conn.execute("ROLLBACK")
-            except sqlite3.Error:
-                pass
-            raise
-        finally:
-            conn.close()
-
-    def list_sources(self, item_id):
-        conn = self.connect()
+    def list_sources(self, item_id, conn=None):
+        own_conn = conn is None
+        if own_conn:
+            conn = self.connect()
         try:
             rows = conn.execute("SELECT * FROM sources WHERE item_id=? ORDER BY id DESC", (item_id,)).fetchall()
             result = []
@@ -204,6 +172,85 @@ class Repository:
                 value["payload"] = json.loads(value["payload"])
                 result.append(value)
             return result
+        finally:
+            if own_conn:
+                conn.close()
+
+    def merge_sources(self, item_id, records, expected, planner, actor, role, expected_version=None):
+        """按 (source_type, external_id) 幂等合并断网补交记录，同一批在一个事务内完成重算。"""
+        conn = self.connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
+            if row is None:
+                raise NotFoundError("item_not_found", "业务实体不存在")
+            if expected_version is not None and int(expected_version) != int(row["version"]):
+                raise ConflictError("version_conflict", "记录已被其他操作更新，请重新读取")
+
+            before_sources = self.list_sources(item_id, conn=conn)
+            existing = {}
+            for source in before_sources:
+                existing[(source["source_type"], source["external_id"])] = source
+
+            merge_results = []
+            for record in records:
+                record = dict(record)
+                key = (record["source_type"], record["external_id"])
+                observed_at = record["observed_at"]
+                body = {name: record[name] for name in ("sensor_value_ppm", "pressure_drop_kpa", "odor_reports", "note")}
+                current = existing.get(key)
+                if current is None:
+                    outcome = "inserted"
+                    conn.execute(
+                        "INSERT INTO sources(item_id,source_type,external_id,payload,observed_at,created_at) VALUES(?,?,?,?,?,?)",
+                        (item_id, key[0], key[1], canonical_json(body), observed_at, now_iso()),
+                    )
+                    stored = {"source_type": key[0], "external_id": key[1], "observed_at": observed_at, "payload": body}
+                elif current["observed_at"] != observed_at or canonical_json(current["payload"]) != canonical_json(body):
+                    outcome = "updated"
+                    conn.execute(
+                        "UPDATE sources SET payload=?, observed_at=? WHERE id=?",
+                        (canonical_json(body), observed_at, current["id"]),
+                    )
+                    stored = dict(current)
+                    stored["observed_at"] = observed_at
+                    stored["payload"] = body
+                else:
+                    outcome = "unchanged"
+                    stored = current
+                existing[key] = stored
+                merge_results.append({
+                    "outcome": outcome,
+                    "source_type": key[0],
+                    "external_id": key[1],
+                    "observed_at": observed_at,
+                    "record": body,
+                })
+
+            after_sources = list(existing.values())
+            status = row["status"]
+            payload = json.loads(row["payload"])
+            plan = planner(status, payload, before_sources, after_sources, merge_results, expected)
+
+            version = int(row["version"])
+            changed_any = any(result["outcome"] != "unchanged" for result in merge_results)
+            payload_changed = canonical_json(plan["payload"]) != row["payload"]
+            if changed_any or plan["events"] or payload_changed:
+                version += 1
+                conn.execute(
+                    "UPDATE items SET status=?,version=?,payload=?,updated_at=? WHERE id=?",
+                    (plan["status"], version, canonical_json(plan["payload"]), now_iso(), item_id),
+                )
+                for event in plan["events"]:
+                    self.append_audit(conn, item_id, event["event_type"], actor, role, event["payload"])
+            conn.execute("COMMIT")
+            return self.get_item(item_id), {"merge_results": merge_results, "plan": plan}
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise
         finally:
             conn.close()
 

@@ -4,6 +4,7 @@ import os
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
+from . import domain
 from .domain import DomainError
 
 
@@ -80,6 +81,16 @@ def build_handler(service, static_dir):
                     return self._send(201, service.create_item(payload, actor, role, region))
                 if len(parts) == 4 and parts[:2] == ["api", "items"] and parts[3] == "sources":
                     return self._send(201, service.add_source(int(parts[2]), payload, actor, role, region))
+                if len(parts) == 4 and parts[:2] == ["api", "items"] and parts[3] == "backfill":
+                    from src import domain as domain_module
+                    records, expected = domain_module.normalize_batch(payload)
+                    expected_version = payload.get("expected_version")
+                    return self._send(
+                        200,
+                        service.backfill(
+                            int(parts[2]), records, expected, actor, role, expected_version
+                        )[1],
+                    )
                 if len(parts) == 4 and parts[:2] == ["api", "items"] and parts[3] == "actions":
                     action = payload.pop("action", "")
                     if not action:
