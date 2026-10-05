@@ -33,6 +33,30 @@ def assess(payload):
     return {"score": round(score, 2), "level": level}
 
 
+LEVEL_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+
+
+def level_rank(level):
+    return LEVEL_RANK.get(level, -1)
+
+
+def apply_reading(payload, reading):
+    """把一份来源读数合并进管段当前读数，并重算泄漏等级。
+
+    只更新来源中实际出现的读数项，未出现的项保持不变。
+    返回 (new_level, changed)。
+    """
+    if reading.get("sensor_value_ppm") is not None:
+        payload["sensor_value_ppm"] = reading["sensor_value_ppm"]
+    if reading.get("pressure_drop_kpa") is not None:
+        payload["pressure_drop_kpa"] = reading["pressure_drop_kpa"]
+    if reading.get("odor_reports") is not None:
+        payload["odor_reports"] = reading["odor_reports"]
+    result = assess(payload)
+    payload["assessment"] = result
+    return result["level"]
+
+
 def _need_status(item, allowed):
     if item["status"] not in allowed:
         raise DomainError("invalid_state", "当前状态 %s 不允许执行该操作" % item["status"])
@@ -70,7 +94,9 @@ def apply_action(item, action, payload, actor, role):
         if not all(isinstance(value, str) and value.strip() for value in sequence):
             raise DomainError("invalid_valve_sequence", "阀门顺序格式无效")
         current["valve_sequence"] = [value.strip() for value in sequence]
-        return "isolated", current, {"valve_sequence": current["valve_sequence"]}
+        current["isolation_level"] = assess(current)["level"]
+        current["isolation_assessment"] = assess(current)
+        return "isolated", current, {"valve_sequence": current["valve_sequence"], "isolation_level": current["isolation_level"]}
 
     if action == "repair":
         _need_status(item, {"isolated", "repaired"})

@@ -13,9 +13,10 @@ class Service:
             raise DomainError("forbidden", "当前角色不能创建此类业务记录", 403)
         normalized = domain.normalize_create(payload)
         stable_key = normalized.pop("_stable_key")
-        return self.repository.create_item(
+        item = self.repository.create_item(
             rules.ENTITY_TYPE, stable_key, rules.INITIAL_STATUS, normalized, actor, role
         )
+        return self.get_item(item["id"])
 
     def add_source(self, item_id, payload, actor, role, region=None):
         if not actor or not role:
@@ -59,7 +60,11 @@ class Service:
         item = self.repository.get_item(item_id)
         item["sources"] = self.repository.list_sources(item_id)
         item["audit"] = self.repository.audit_trail(item_id)
-        item["assessment"] = rules.assess(item["payload"])
+        assessment = rules.assess(item["payload"])
+        item["assessment"] = assessment
+        item["payload"]["assessment"] = assessment
+        present = {source["source_type"] for source in item["sources"]}
+        item["missing_sources"] = [t for t in ("sensor", "manual") if t not in present]
         return item
 
     def list_items(self, status=None):

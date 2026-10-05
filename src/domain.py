@@ -57,6 +57,15 @@ def normalize_create(payload):
     if odor_reports < 0:
         raise DomainError("invalid_odor_reports", "异味报告数不能为负数")
     reporter = require_text(payload, "reporter")
+    external_id = payload.get("external_id")
+    if external_id is not None:
+        external_id = require_text(payload, "external_id")
+    source_type = payload.get("source_type")
+    if source_type is not None:
+        source_type = require_text(payload, "source_type")
+    source_external_id = payload.get("source_external_id")
+    if source_external_id is not None:
+        source_external_id = require_text(payload, "source_external_id")
     stable_key = "%s|%s|%s" % (pipeline_id, segment_id, reported_at)
     return {
         "pipeline_id": pipeline_id,
@@ -66,6 +75,9 @@ def normalize_create(payload):
         "sensor_value_ppm": sensor_ppm,
         "odor_reports": odor_reports,
         "reporter": reporter,
+        "external_id": external_id,
+        "source_type": source_type or "manual",
+        "source_external_id": source_external_id,
         "source_comparison": [],
         "valve_sequence": [],
         "hazards_clear": False,
